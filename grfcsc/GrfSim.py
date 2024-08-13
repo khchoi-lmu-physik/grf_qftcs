@@ -483,7 +483,7 @@ class grf_sim:
         np.save(f'skew_array_run_{run_id+1}.npy', np.array(statistics['skew']))
         np.save(f'kurt_array_run_{run_id+1}.npy', np.array(statistics['kurt']))
 
-    def realize_2d(grf, z_pos=None, normalization = True, min_val=-1, max_val=+1, cmap='viridis', resolution= 8):
+    def realize_2d(self, grf, z_pos=None, normalization = True, min_val=-1, max_val=+1, cmap='viridis', resolution= 8):
         """
         Plots a 2D slice extracted from a 3D Gaussian Random Field.
 
