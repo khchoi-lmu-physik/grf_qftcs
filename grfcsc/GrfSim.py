@@ -418,7 +418,6 @@ class grf_sim:
         del grf
 
         # Compute statistical measures
-
         # Calculate standard deviation, mean, skewness, and kurtosis
         grf_std = np.std(all_points)
         grf_mean = np.mean(all_points)
@@ -502,14 +501,12 @@ class grf_sim:
         Returns:
             matplotlib.figure.Figure: The figure object containing the plot.
         """
-        # If no z-position is provided, use the middle of the z-axis
-        grf = cp.asnumpy(grf)
-
+        # If no z-position is provided, use the middle of the z-axis 
         if z_pos is None:
             z_pos = grf.shape[2]//2
 
         # Extract a 2D slice from the simulation box
-        grf_slice = grf[:,:,z_pos]
+        grf_slice = cp.asnumpy( grf[:,:,z_pos] )
 
         # Normalize the data if normalization = True
         if normalization == True:
