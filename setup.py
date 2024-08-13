@@ -8,7 +8,6 @@ setup(
         "numpy",     
         "matplotlib",
         "scipy",
-        "cupy",
     ],
     author="Ka Hei Choi",
     author_email="K.Choi@physik.uni-muenchen.de",
