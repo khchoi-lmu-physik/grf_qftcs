@@ -505,7 +505,7 @@ class grf_sim:
         # If no z-position is provided, use the middle of the z-axis
         grf = cp.asnumpy(grf)
 
-        if z_pos == None:
+        if z_pos is None:
             z_pos = grf.shape[2]//2
 
         # Extract a 2D slice from the simulation box
