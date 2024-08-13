@@ -506,7 +506,7 @@ class grf_sim:
             z_pos = grf.shape[2]//2
 
         # Extract a 2D slice from the simulation box
-        grf_slice = cp.asnumpy( grf[:,:,z_pos] )
+        grf_slice = cp.asnumpy(grf)[:,:,z_pos]  
 
         # Normalize the data if normalization = True
         if normalization == True:
