@@ -1,16 +1,3 @@
-# @title
-
-# Import packages and libraries
-
-from scipy.special import hankel2
-from scipy.stats import skew, kurtosis
-
-import cupy as cp
-import numpy as np
-import matplotlib.pyplot as plt
-import os
-import gc
-import time as ti
 
 # @title 1.1 Random field simulations
 
@@ -283,7 +270,7 @@ class grf_sim:
 
 
     def run_simulation_rdu(self,  start_time, stop_time, time_step, run_id=0,  amplitude = 1, extra_time_range = [], save_grf_time = [], plot_bool = False ):
-        """
+       """
         Runs a Gaussian Random Field (GRF) simulation over a specified time
         range in the radiation-dominated universe (RDU).
 
@@ -483,3 +470,51 @@ class grf_sim:
         np.save(f'skew_array_run_{run_id+1}.npy', np.array(statistics['skew']))
         np.save(f'kurt_array_run_{run_id+1}.npy', np.array(statistics['kurt']))
 
+    def realize_2d(grf, z_pos=None, normalization = True, min_val=-1, max_val=+1, cmap='viridis', resolution= 8):
+        """
+        Plots a 2D slice extracted from a 3D Gaussian Random Field.
+
+        Args:
+            grf (cp.ndarray): The 3D Gaussian Random Field data.
+            z_pos (int): The z-position to slice for the 2D plot. Defaults to the
+            middle of the z-axis.
+            normalization (bool): Whether to normalize the data by 3 times
+            the standard deviation. Defaults to True.
+            min_val (float): Minimum value for the color scale. Defaults to -1.
+            max_val (float): Maximum value for the color scale. Defaults to 1.
+            cmap (str): Colormap used for plotting. Defaults to 'viridis'.
+            resolution (int): Resolution of the plot figure. Defaults to 25.
+
+        Returns:
+            matplotlib.figure.Figure: The figure object containing the plot.
+        """
+        # If no z-position is provided, use the middle of the z-axis
+        grf = cp.asnumpy(grf)
+
+        if z_pos == None:
+            z_pos = grf.shape[2]//2
+
+        # Extract a 2D slice from the simulation box
+        grf_slice = grf[:,:,z_pos]
+
+        # Normalize the data if normalization = True
+        if normalization == True:
+
+            # Calculate the standard deviation of the data
+            grf_std = np.std(grf)
+
+            # Normalize the data by 3 times the standard deviation
+            grf_slice = grf[:,:,z_pos] / ( 3*(grf_std) )
+
+        # Create a new figure
+        fig = plt.figure(figsize=(resolution, resolution))
+
+        # Plot the 2D slice using the specified colormap and color scale
+        cax = plt.imshow(grf_slice, cmap=cmap, clim=[min_val, max_val])
+        plt.grid(False)
+        plt.tick_params(axis='both', colors='black', direction='out', length=8, width=1, labelsize=16)
+        plt.xlabel(r'$x/x_0$', fontsize=20, color='black')
+        plt.ylabel(r'$y/y_0$', fontsize=20, color='black')
+
+        plt.tight_layout()
+        plt.show()
