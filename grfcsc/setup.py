@@ -1,9 +1,9 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(
     name="grfcsc",
     version="0.1.0",
-    packages=[''grf_qftcs'],
+    packages=find_packages(),
     install_requires=[
         "numpy",     
         "matplotlib",
