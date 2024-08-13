@@ -1,484 +1,267 @@
-# @title
 
-# Import packages and libraries
+# @title Import packages and libraries
 
 from scipy.special import hankel2
 from scipy.stats import skew, kurtosis
 
-import cupy as cp
 import numpy as np
+
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+
+import glob
 import os
 import gc
 import time as ti
 
-# @title 1.1 Random field simulations
-
-class grf_sim:
-
-    def __init__(self, pixel=2**9, mean=0, std_dev=1):
-        """
-        Initializes the grf_sim class with default or provided parameters.
-
-        Upon initialization, Gaussian white noise is automatically sampled
-        and its Fourier Transform is computed. This is the basis
-        for generating the Gaussian Random Fields in curved spacetimes.
-
-        Args:
-            pixel (int): Resolution of the field (number of pixels per dimension).
-            mean (float): Mean of the Gaussian white noise. Default to 0.
-            std_dev (float): Standard deviation of the Gaussian white noise.
-                             Default to 1.
-        """
-        self.pixel = pixel
-        self.mean = mean
-        self.std_dev = std_dev
-        self.fft_white_noise, self.k_norm = self.grf_initialization()
-
-    def grf_initialization(self):
-        """
-        Initializes the Gaussian Random Fields simulation by generating white
-        noise and computing its Fast Fourier Transform.
-
-        This function is automatically compiled upon calling the grf_sim class.
-
-        Returns:
-            fft_white_noise (cp.ndarray): Fourier-transformed white noise.
-            k_norm (cp.ndarray): Norm of the momentum space grid.
-        """
-        # Sampling Gaussian white noise
-        white_noise = cp.random.normal(self.mean, self.std_dev, (self.pixel, self.pixel, self.pixel))
-
-        # Compute the FFT of the Gaussian white noise
-        fft_white_noise = cp.fft.fftn(white_noise).astype(cp.complex128)
-        # Free up memeory
-        del white_noise
-
-        # Generate FFT momentum frequencies for each dimension
-        kx = cp.fft.fftfreq(self.pixel)*self.pixel
-        ky = cp.fft.fftfreq(self.pixel)*self.pixel
-        kz = cp.fft.fftfreq(self.pixel)*self.pixel
-
-        # Create a 3D grid of momentum vectors
-        kx_grid, ky_grid, kz_grid = cp.meshgrid(kx, ky, kz)
-        # Free up memory
-        del kx, ky, kz
-
-        # Compute the norm of the momentum vector k
-        k_norm =  cp.sqrt( kx_grid**2 + ky_grid**2 + kz_grid**2 ) # k = sqrt( kx^2 + ky^2  + kz^2 )
-
-        # Regularize divergence at k=0, for any power spectrum of spectral index less than.
-        k_norm[0,0,0] = cp.inf
-        # Free up memories
-        del kx_grid, ky_grid, kz_grid
-
-        # Return FFT white noise and the norm of momentum vector k
-        return fft_white_noise, k_norm
-
-    def generate_grf_desitter(self, time=1, amplitude=1/10, n_index=1.5):
-        """
-        Generates a Gaussian Random Field based on the de Sitter power spectrum.
-
-        Args:
-            time (float): Time variable at which the Gaussian Random Field is
-            simulated. Default to 1.
-            amplitude (float): Amplitude scaling factor for the field.
-            Default to 1/10.
-            n_index (float): Spectral index for the power spectrum.
-            Default to 3/2.
-
-        Returns:
-            gaussian_random_field (cp.ndarray): Real part of the generated
-            Gaussian Random Field.
-        """
-
-        # Convert momentum norm and amplitude to NumPy arrays for CPU operations
-        k_norm = cp.asnumpy(self.k_norm)
-        # Amplitude of the field
-        amplitude = cp.asnumpy(amplitude)
-
-
-        """
-        Calculate the Fourier amplitude using the Klein-Gordon solution
-        in De-Sitter Space.
-
-        The generation of Gaussian Random Fields in DeSitter space is not
-        optimized here due to the lack of Hankel function in CuPy.
-        The author still needs to implement the Hankel function using CUDA here.
-
-        """
-        fourier_amplitudes_sqrt =  np.sqrt(np.pi) * 0.5 *  amplitude   *  (time**(3/2)) * hankel2(n_index, time * ( (2 * np.pi/self.pixel)* k_norm) )
-        # Free up memories
-        del k_norm
-
-        # Regularize divergence at k=0 by setting the amplitude to zero
-        fourier_amplitudes_sqrt[0,0,0] = 0
-
-        # Convert the Fourier amplitudes to a CuPy array and specifying data type with complex128.
-        fourier_amplitudes_sqrt = cp.asarray(fourier_amplitudes_sqrt).astype(cp.complex128)
-
-        # Take the absolute value of the Fourier amplitudes and specifying data type with complex128
-        fourier_amplitudes_sqrt = cp.abs(fourier_amplitudes_sqrt).astype(cp.complex128)
-
-        # Multiply with Fourier amplitude with FFT white noise
-        fourier_amplitudes_sqrt *= self.fft_white_noise
-
-        # Perform inverse FFT to get the real-space Gaussian Random Fields
-        gaussian_random_field = cp.fft.ifftn(fourier_amplitudes_sqrt)
-
-        # Free up memories
-        del fourier_amplitudes_sqrt
-
-        # Return the real part of the Gaussian Random Fields
-        return gaussian_random_field.real
-
-
-    def generate_grf_rdu(self, time=1, amplitude=1):
-        """
-        Generates a Gaussian Random Field based on the power spectrum of
-        radiation-dominated universe (RDU).
-
-        Args:
-            time (float): Time variable at which the Guassian random fields are
-            simulated. Default to 1.
-            amplitude (float): Amplitude scaling factor for the GRF.
-             Default to 1.
-
-        Returns:
-            gaussian_random_field (cp.ndarray): Real part of the generated GRF.
-        """
-
-        # Calculate the power spectrum of a scalar field in the RDU
-        power_spectrum = amplitude * (1/2) * (time ** (-2)) * ( (2 * cp.pi / self.pixel) * self.k_norm) ** (-1)
-
-        # Compute the square root of the power spectrum, and specify data type as complex128
-        fourier_amplitudes_sqrt = cp.sqrt(power_spectrum).astype(cp.complex128)
-        # Free up memory
-        del power_spectrum
-
-        # Multiply with the FFT of the white noise
-        fourier_amplitudes_sqrt *= self.fft_white_noise
-
-        # Perform inverse FFT to get the real-space Guassian Random Fields
-        gaussian_random_field = cp.fft.ifftn(fourier_amplitudes_sqrt)
-        # Free up memory
-        del fourier_amplitudes_sqrt
-
-        # Return the real part of the Gaussian Random Fields
-        return gaussian_random_field.real
-
-    def run_simulation_desitter(self,  start_time, stop_time, time_step, run_id=0,  amplitude = 1/10, n_index=1.5, extra_time_range = [], save_grf_time = [], plot_bool = False ):
-        """
-        Runs a Gaussian Random Field simulation over a specified time range
-        wtih the De Sitter spacetimes as the background geomerty.
-
-        Args:
-            start_time (float): Starting time of the simulation.
-            No deafult value.
-            stop_time (float): Ending time of the simulation. No deafult value.
-            time_step (float): Time step between simulations. No deafult value.
-            run_id (int): Identifier for the multi-simulation run.
-            Defaults to 0.
-            amplitude (float): Amplitude scaling factor for the quantum field.
-            Defaults to 1/10.
-            n_index (float): Spectral index for the power spectrum.
-            Defaults to 3/2.
-            extra_time_range (list): Additional times outside the specified
-            time range to include for the simulation. Defaults to None.
-            save_grf_time (list): Times at which the Gaussian Random Fields
-            data should be saved. Defaults to None.
-            plot_bool (bool): Whether to plot results during the simulation.
-            Defaults to False.
-
-        Saves:
-            Gaussian Random Field data (`grf`) at specified time points
-            if `plot_bool` is True. The data is saved in .npy format
-            The filename is identified by the time and resolution in the
-            format of `grf_t={time:.4f}_pixel={self.pixel}.npy`.
-            Statistical measures collected during the simulation
-            (e.g., standard deviation, mean, skewness, kurtosis)
-            are automatically saved to disk at the end of the simulation.
-        """
-
-        t0 = ti.time()
-
-         # Calculate the number of steps based on time range and step size
-        num_steps = int( (stop_time - start_time) / time_step) + 1
-
-        # Create a timeline for the simulation
-        time_line = np.linspace(start_time, stop_time, num_steps)
-
-        # The timeline includes the specified time range and additional times
-        time_line = np.concatenate( (time_line,  np.array(extra_time_range) ) )
-
-        # Initialize statistics dictionary to store statistics
-        statistics  = {'std': [], 'mean': [], 'skew': [], 'kurt': [], 'max_val': [], 'over_2std': []}
-
-        for time in time_line:
-
-            t1 = ti.time()
-
-            # Generate the Gaussian Rrandom Field for the current time step
-            grf = self.generate_grf_desitter(time=time, amplitude=amplitude, n_index=n_index)
-
-            """
-            This line computes the statistical measures for the Gaussian
-            Random Fields:
-
-            1. Standard deviation (grf_std).
-            2. Mean (grf_mean).
-            3. Skewness (grf_skew): Measures the asymmetry of the Gaussian
-            Random Field distribution.
-            4. Kurtosis (grf_kurt): Measures the tailness of the Gaussian
-            Random Field distribution.
-            5. `stats_overview` generates and returns a histogram (`stat_fig`)
-            of the flattened Gaussian random field data.
-            """
-            # Gather statistics of the Gaussian Random Field
-            stat_fig, grf_std, grf_mean, grf_skew, grf_kurt = self.stats_overview(grf)
-
-            # Flatten and analyze the data
-            """
-            The following operations flatten and analyze the Gaussian Random
-            Field data for:
-            1. The maximum value
-            2. Finding all data points that exceed 2 Std.
-            3. Calculates the percentage of data points that exceed 2 Std.
-            """
-            # Flatten the data
-            grf_abs_flatten = cp.abs(grf).flatten()
-
-            # Find the maximum of the data
-            grf_max_val = cp.max(grf_abs_flatten).get()
-
-            # Identify all the data points that exceed 2 Std.
-            samples_over_2std = grf_abs_flatten[grf_abs_flatten > (2 * grf_std)]
-
-            # Calculate the prcentage of data points that exceed 2 Std.
-            percent_over_2std = (samples_over_2std.size / grf_abs_flatten.size) * 100
-
-            # Store the statistics in the dictionary
-            for key, value in zip(statistics.keys(), [grf_std, grf_mean, grf_skew, grf_kurt, grf_max_val, percent_over_2std]):
-                statistics[key].append([time, value])
-
-            # Optionally save Gaussian Random Field in (.npy) format, and print computational time.
-            if run_id == 0 and plot_bool == True and round(time,4) in save_grf_time:
-
-                # Save Gaussian random field data in .npy format.
-                cp.save(f'grf_t={time:.4f}_pixel={self.pixel}.npy', grf)
-
-                tf = ti.time() - t1
-
-                # Print computational time
-                print(f't= {time:.4f}: Computational time is: {tf:.2f} seconds')
-                plt.close('all')
-
-        # Save statistics dictionary
-        self.save_statistics(statistics, run_id)
-
-        # Print total computational time
-        tf = ti.time() - t0
-        print(f'Run: {run_id+1}: Computational time for this runs is: {tf:.2f} seconds')
-        plt.close('all')
-
-
-    def run_simulation_rdu(self,  start_time, stop_time, time_step, run_id=0,  amplitude = 1, extra_time_range = [], save_grf_time = [], plot_bool = False ):
-        """
-        Runs a Gaussian Random Field (GRF) simulation over a specified time
-        range in the radiation-dominated universe (RDU).
-
-        Args:
-            start_time (float): Starting time of the simulation.
-            No default value.
-            stop_time (float): Ending time of the simulation. No default value.
-            time_step (float): Time step between simulations. No default value.
-            run_id (int): Identifier for the multi-simulation run. Defaults to 0.
-            amplitude (float): Amplitude scaling factor for the quantum field.
-            Defaults to 1.
-            extra_time_range (list): Additional times outside the specified
-            time range to include in the simulation. Defaults to None.
-            save_grf_time (list): Specific times at which the GRF data
-            should be saved. Defaults to None.
-            plot_bool (bool): Whether to plot results during the simulation.
-            Defaults to False.
-
-        Saves:
-            Gaussian Random Field data (`grf`) at specified time points
-            if `plot_bool` is True. The data is saved in .npy format.
-            The filename is identified by the time and resolution in the
-            format of `grf_t={time:.4f}_pixel={self.pixel}.npy`.
-            Statistical measures collected during the simulation
-            (e.g., standard deviation, mean, skewness, kurtosis)
-            are automatically saved to disk at the end of the simulation.
-        """
-        t0 = ti.time()
-
-        # Calculate the number of simulation steps based on the time range and time step
-        num_steps = int( (stop_time - start_time) / time_step) + 1
-
-        # Create a timeline for the simulation
-        time_line = np.linspace(start_time, stop_time, num_steps)
-
-        # The timeline includes the specified time range and additional times
-        time_line = np.concatenate( (time_line,  np.array(extra_time_range) ) )
-
-        # Initialize a dictionary to store statistics
-        statistics  = {'std': [], 'mean': [], 'skew': [], 'kurt': [], 'max_val': [], 'over_2std': []}
-
-        for time in time_line:
-
-            t1 = ti.time()
-
-            # Generate the Gaussian Random Field for the current time step
-            grf = self.generate_grf_rdu(time=time, amplitude=amplitude)
-
-            """
-            This line computes the statistical measures for the Gaussian Random Fields:
-
-            1. Standard deviation (grf_std).
-            2. Mean (grf_mean).
-            3. Skewness (grf_skew): Measures the asymmetry of the Gaussian
-            Random Field distribution.
-            4. Kurtosis (grf_kurt): Measures the tailness of the Gaussian
-            Random Field distribution.
-            5. `stats_overview` generates and returns a histogram (`stat_fig`)
-            of the flattened Gaussian random field data.
-            """
-            # Gather statistics of the Gaussian Random Field
-            stat_fig, grf_std, grf_mean, grf_skew, grf_kurt = self.stats_overview(grf)
-
-            # Flatten and analyze the data
-            """
-            The following operations flatten and analyze the Gaussian Random
-            Field data for:
-            1. The maximum value
-            2. Finding all data points that exceed 2 Std.
-            3. Calculates the percentage of data points that exceed 2 Std.
-            """
-            # Flatten the data
-            grf_abs_flatten = cp.abs(grf).flatten()
-
-            # Find the maximum of the data
-            grf_max_val = cp.max(grf_abs_flatten).get()
-
-            # Identify all the data points that exceed 2 Std.
-            samples_over_2std = grf_abs_flatten[grf_abs_flatten > (2 * grf_std)]
-
-            # Calculate the percentage of data points that exceed 2 Std.
-            percent_over_2std = (samples_over_2std.size / grf_abs_flatten.size) * 100
-
-            # Store the statistics in the dictionary
-            for key, value in zip(statistics.keys(), [grf_std, grf_mean, grf_skew, grf_kurt, grf_max_val, percent_over_2std]):
-                statistics[key].append([time, value])
-
-            # Optionally save Gaussian Random Field in (.npy) format, and print computational time.
-            if run_id == 0 and plot_bool == True and round(time,4) in save_grf_time:
-
-                # Save Gaussian random field data in .npy format.
-                cp.save(f'grf_t={time:.4f}_pixel={self.pixel}.npy', grf)
-
-                tf = ti.time() - t1
-
-                # Print computational time
-                print(f't= {time:.4f}: Computational time is: {tf:.2f} seconds')
-                plt.close('all')
-
-        # Save statistics dictionary
-        self.save_statistics(statistics, run_id)
-
-        tf = ti.time() - t0
-
-        # Print total computational time
-        print(f'Run: {run_id+1}: Computational time for this runs is: {tf:.2f} seconds')
-        plt.close('all')
-
-
-    def stats_overview(self, grf):
-        """
-        Computes and returns key statistical measures for the given Gaussian
-        Random Field data.
-
-        Args:
-            grf (cp.ndarray): The Gaussian random field (GRF) data.
-
-        Returns:
-            stat_fig (matplotlib.figure.Figure): A figure object showing the
-            histogram of the GRF.
-            grf_std (float): Standard deviation of the GRF data.
-            grf_mean (float): Mean value of the GRF data.
-            grf_skew (float): Skewness of the GRF data.
-            grf_kurt (float): Kurtosis of the GRF data.
-        """
-
-        # Convert the Gaussian Random field data into a NumPy array and flatten for analysis
-        all_points = cp.asnumpy(grf.flatten())
-
-        # Free memories
-        del grf
-
-        # Compute statistical measures
-
-        # Calculate standard deviation, mean, skewness, and kurtosis
-        grf_std = np.std(all_points)
-        grf_mean = np.mean(all_points)
-        grf_skew = skew(all_points)
-        grf_kurt = kurtosis(all_points)
-
-        # Plot a histogram of the GRF values with 256 bins
-        plt.hist(all_points, bins=256)
-
-        # Create a string for of statistics summaries
-        textstr = (f'Std. Dev. = {grf_std:.4f}\n'
-                f'Mean = {grf_mean:.4f}\n'
-                f'Skewness = {grf_skew:.4f}\n'
-                f'Kurtosis = {grf_kurt:.4f}')
-
-
-        # Add statistical measures as a text box to the plot
-        plt.gca().text(0.05, 0.95, textstr, transform=plt.gca().transAxes, fontsize=14,
-                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-
-        # Set plot titles and x-y labels
-        plt.title('Random Field Statistics', fontsize=16)
-        plt.xlabel('Field amplitude', fontsize=16)
-        plt.ylabel('Number of data points', fontsize=16)
-
-        return plt.gcf(), grf_std, grf_mean, grf_skew, grf_kurt
-
-
-    def save_statistics(self, statistics, run_id):
-        """
-        Saves the statistical measures of the Guassian Radnom Field (GRF)
-        to .npy files.
-
-        Args:
-            statistics (dict): Dictionary containing statistical measures
-            for each time step.
-            run_id (int): Identifier for the different simulation run.
-
-        Saves:
-            `percent_over_2std_array_run_{run_id+1}.npy`:
-                Contains the percentage of data points in the GRF that
-                exceed 2 Std. for each time step.
-
-            `max_val_array_run_{run_id+1}.npy`:
-                Stores the maximum absolute value in the GRF for each time step.
-
-            `std_array_run_{run_id+1}.npy`:
-                Contains the standard deviation of the GRF for each time step.
-
-            `mean_array_run_{run_id+1}.npy`:
-                Stores the mean value of the GRF for each time step.
-
-            `skew_array_run_{run_id+1}.npy`:
-                Contains the skewness of the GRF for each time step.
-
-            `kurt_array_run_{run_id+1}.npy`:
-                Stores the kurtosis of the GRF for each time step.
-        """
-        np.save(f'percent_over_2std_array_run_{run_id+1}.npy', np.array(statistics['over_2std']))
-        np.save(f'max_val_array_run_{run_id+1}.npy', np.array(statistics['max_val']) )
-        np.save(f'std_array_run_{run_id+1}.npy', np.array(statistics['std']))
-        np.save(f'mean_array_run_{run_id+1}.npy', np.array(statistics['mean']))
-        np.save(f'skew_array_run_{run_id+1}.npy', np.array(statistics['skew']))
-        np.save(f'kurt_array_run_{run_id+1}.npy', np.array(statistics['kurt']))
+# @title 1.2 Figures plottings
+
+def multiple_run_std_mean(npy_data, total_steps, time_steps):
+    """
+    Computes running the mean and standard deviation across
+    multiple simulatiosns.
+
+    Args:
+        npy_data (list): List of file paths to the .npy files containing
+        simulation data for each run.
+        total_steps (int): Total number of time steps in the simulation.
+        time_steps (float): Time increment between each simulation step.
+
+    Returns:
+        tuple: Two NumPy arrays, one containing the mean values and the other
+        containing the standard deviations at each time step across all runs.
+    """
+
+    mean_array = []
+    std_array  = []
+
+    # Iterate over each time step to compute mean and standard deviation
+    for steps in range(total_steps):
+
+        # Compute the time at the current step
+        time = (steps+1)*time_steps
+
+        data = []
+
+        # Collect data from all runs at the current time step
+        for data_name in npy_data:
+
+            # Load the  data from the .npy file
+            data_array = np.load(f'{data_name}')
+
+            # Append to the data list by extracting the Gassian random field data
+            data.append(data_array[steps, 1])
+
+        # Compute the mean and standard deviation at the current time step
+        mean_array.append( [time, np.mean(data)] )
+        std_array.append ( [time, np.std( data)] )
+
+    return np.array(mean_array ), np.array(std_array )
+
+
+def plot_multiple_runs( data_prefix, ylabel, total_steps, time_steps, xlabel= r'$\eta/\eta_0$' ):
+
+    """
+    Plots the statistics of multiple simulation runs on the same graph, with a
+    the running mean and standard deviation across all simulations.
+
+    Args:
+        data_prefix (str): Prefix used to identify relevant .npy files.
+        ylabel (str): Label for the y-axis.
+        total_steps (int): Total number of time steps to plot.
+        time_steps (float): Time increment of each simulation.
+        xlabel (str): Label for the x-axis. Defaults to r'$\eta/\eta_0$'.
+
+    Returns:
+        matplotlib.figure.Figure: The figure object containing the plot.
+    """
+    # slow but clean
+    fig = plt.figure(figsize=(8, 6))
+
+    # Find all .npy files matching the data prefix
+    npy_data = glob.glob(f'{data_prefix}_*.npy')
+
+    # Plot each run individually with different styles for the first run
+    for data_name in npy_data:
+
+        # Load the data from the .npy file
+        data = np.load(f'{data_name}')
+
+        # Extract the run ID from the file name
+        run_id = int(data_name.split('_')[-1].split('.')[0])
+
+        # Set the line width and color
+        linewidth = 2.5 if run_id == 1 else 1.25
+        color = 'red' if run_id == 1 else 'green'
+        alpha = 0.7 if run_id == 1 else 0.35
+        zorder = 2 if run_id == 1 else 1
+
+        # Plot the data for the current run
+        plt.plot(data[:total_steps, 0], data[:total_steps, 1], color=color, alpha=alpha, linewidth=linewidth, zorder=zorder)
+
+    # Compute the running mean and standard deviation across all simulation runs
+    running_mean , running_std = multiple_run_std_mean(npy_data, total_steps, time_steps) #extract mean and std over all multiple run.
+
+    # Plot the running mean
+    plt.plot(running_mean[:total_steps, 0], running_mean[:total_steps, 1], color='black', alpha=0.8, linewidth=2.5, zorder=3)
+
+    # Fill the area between the running mean +- runnning standard deviation
+    plt.fill_between(running_mean[:total_steps, 0],
+                    running_mean[:total_steps, 1] + running_std[:total_steps, 1],
+                    running_mean[:total_steps, 1] - running_std[:total_steps, 1],
+                    color='blue', alpha=0.2, zorder=2)
+
+    # Set the labels and title format
+    plt.xlabel(xlabel, fontsize=20, color='black')
+    plt.ylabel(ylabel, fontsize=20, color='black')
+    plt.gca().yaxis.get_offset_text().set_fontsize(20)
+    plt.tick_params(axis='both', colors='black', direction='out', length=6, width=2, labelsize=20)
+
+    fig.tight_layout()
+    return fig
+
+
+def plot_grf_2d(grf, z_pos=None, normalization = True, min_val=-1, max_val=+1, cmap='viridis', resolution= 25):
+    """
+    Plots a 2D slice extracted from a 3D Gaussian Random Field.
+
+    Args:
+        grf (np.ndarray): The 3D Gaussian Random Field data.
+        z_pos (int): The z-position to slice for the 2D plot. Defaults to the
+        middle of the z-axis.
+        normalization (bool): Whether to normalize the data by 3 times
+        the standard deviation. Defaults to True.
+        min_val (float): Minimum value for the color scale. Defaults to -1.
+        max_val (float): Maximum value for the color scale. Defaults to 1.
+        cmap (str): Colormap used for plotting. Defaults to 'viridis'.
+        resolution (int): Resolution of the plot figure. Defaults to 25.
+
+    Returns:
+        matplotlib.figure.Figure: The figure object containing the plot.
+    """
+    # If no z-position is provided, use the middle of the z-axis
+    if z_pos == None:
+        z_pos = grf.shape[2]//2
+
+    # Extract a 2D slice from the simulation box
+    grf_slice = grf[:,:,z_pos]
+
+    # Normalize the data if normalization = True
+    if normalization == True:
+
+        # Calculate the standard deviation of the data
+        grf_std = np.std(grf)
+
+        # Normalize the data by 3 times the standard deviation
+        grf_slice = grf[:,:,z_pos] / ( 3*(grf_std) )
+
+    # Create a new figure
+    fig = plt.figure(figsize=(resolution, resolution))
+
+    # Plot the 2D slice using the specified colormap and color scale
+    cax = plt.imshow(grf_slice, cmap=cmap, clim=[min_val, max_val])
+    plt.grid(False)
+    plt.tick_params(axis='both', colors='black', direction='out', length=32, width=5, labelsize=60)
+    plt.xlabel(r'$x/x_0$', fontsize=72, color='black')
+    plt.ylabel(r'$y/y_0$', fontsize=72, color='black')
+
+    plt.tight_layout()
+
+    return fig
+
+
+def logplot_grf_2d(grf, z_pos=None, normalization = True,  min_val=0.01, max_val=+1, cmap='inferno', resolution= 25):
+    """
+    Plots a 2D slice extracted from a 3D Gaussian Random Field with a color
+    scheme on a logarithmic scale.
+
+    Args:
+        grf (np.ndarray): The 3D Gaussian Random Field data.
+        z_pos (int): The z-position to slice for the 2D plot. Defaults to the
+        middle of the z-axis.
+        normalization (bool): Whether to normalize the data by 3 times the
+        standard deviation. Defaults to True.
+        min_val (float): Minimum value for the logarithmic color scale.
+        Defaults to 0.01.
+        max_val (float): Maximum value for the logarithmic color scale.
+        Defaults to 1.
+        cmap (str): Colormap used for plotting. Defaults to 'inferno'.
+        resolution (int): Resolution of the plot figure. Defaults to 25.
+
+    Returns:
+        matplotlib.figure.Figure: The figure object containing the plot.
+    """
+
+    # If no z-position is provided, use the middle of the z-axis
+    if z_pos == None:
+        z_pos = grf.shape[2]//2
+
+    # Extract a 2D slice from the simulation box
+    grf_slice = grf[:,:,z_pos]
+
+    # Normalize the data if normalization = True
+    if normalization == True:
+
+        # Calculate the standard deviation of the data
+        grf_std = np.std(grf)
+
+        # Normalize the data by 3 times the standard deviation
+        grf_slice = grf[:,:,z_pos] / ( 3*(grf_std) )
+
+
+    # Create a new figure
+    fig = plt.figure(figsize=(resolution, resolution))
+
+    # Plot the 2D slice using the specified colormap and logarithmic color scale
+    cax = plt.imshow(grf_slice, cmap=cmap, norm=LogNorm(vmin=min_val, vmax=max_val))
+    plt.grid(False)
+    plt.tick_params(axis='both', colors='black', direction='out', length=32, width=5, labelsize=60)
+    plt.xlabel(r'$x/x_0$', fontsize=72, color='black')
+    plt.ylabel(r'$y/y_0$', fontsize=72, color='black')
+
+    plt.tight_layout()
+    return fig
+
+def stats_overview(grf):
+    """
+    Computes and plots statistic summary for the Gaussian Random Field data.
+
+    Args:
+        grf (np.ndarray): The 3D Gaussian Random Field data.
+
+    Returns:
+        tuple: The figure object containing the plot and the
+        computed statistic summary
+        (standard deviation, mean, skewness, and kurtosis).
+    """
+
+    # Flatten the GRF to a 1D array
+    all_points = grf.flatten()
+
+    # Free memories
+    del grf
+
+    # Calculate statistic summary
+    grf_std = np.std(all_points)
+    grf_mean = np.mean(all_points)
+    grf_skew = skew(all_points)
+    grf_kurt = kurtosis(all_points)
+
+    # Plot a histogram of the Gaussian Random Field data
+    plt.hist(all_points, bins=256)
+
+    # Create a string summarizing the statistics
+    textstr = (f'Std. Dev. = {grf_std:.4f}\n'
+            f'Mean = {grf_mean:.4f}\n'
+            f'Skewness = {grf_skew:.4f}\n'
+            f'Kurtosis = {grf_kurt:.4f}')
+
+    # Add text to the plot
+    plt.gca().text(0.05, 0.95, textstr, transform=plt.gca().transAxes, fontsize=14,
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.title('Random Field Statistics', fontsize=16)
+    plt.xlabel('Field amplitude', fontsize=16)
+    plt.ylabel('Number of data points', fontsize=16)
+
+    return plt.gcf(), grf_std, grf_mean, grf_skew, grf_kurt
