@@ -284,7 +284,7 @@ class grf_sim:
 
 
     def run_simulation_rdu(self,  start_time, stop_time, time_step, run_id=0,  amplitude = 1, extra_time_range = [], save_grf_time = [], plot_bool = False ):
-       """
+        """
         Runs a Gaussian Random Field (GRF) simulation over a specified time
         range in the radiation-dominated universe (RDU).
 
